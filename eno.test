@@ -1,0 +1,287 @@
+package require tcltest 2.0
+namespace import ::tcltest::*
+
+source eno.tcl
+
+## comment/empty
+
+test parse-comment-1 {one comment} -body {
+	eno parse {  > comment}
+} -result {}
+
+test parse-comment-2 {multiple comments} -body {
+	eno parse {  > comment
+>comment 2
+   > comment 3}
+} -result {}
+
+test parse-empty-1 {empty lines w/ whitespace} -body {
+	eno parse {
+		
+	}
+} -result {}
+
+## field
+
+test parse-field-1 {simple field} -body {
+	eno parse {foo: bar}
+} -result {{field foo bar}}
+
+test parse-field-2 {field line continuation} -body {
+	eno parse {foo: bar
+	\ baz}
+} -result {{field foo {bar baz}}}
+
+test parse-field-3 {field newline continuation} -body {
+	eno parse {foo: bar
+	| baz}
+} -result {{field foo {bar
+baz}}}
+
+test parse-field-4 {field newline and comment/empty lines} -body {
+	eno parse {foo: bar
+	> foo
+
+	| baz}
+} -result {{field foo {bar
+baz}}}
+
+
+
+test parse-field-5 {quoted key} -body {
+	eno parse {``foo``: bar}
+} -result {{field foo bar}}
+
+test parse-field-6 {unicode} -body {
+	eno parse {It was a night full of ⭐s and 🤖s in 서울특별시!: That was a sentence.}
+} -result {{field {It was a night full of ⭐s and 🤖s in 서울특별시!} {That was a sentence.}}}
+
+test parse-field-7 {field copy} -body {
+	eno parse {foo: bar
+	foo copy < foo}
+} -result {{field foo bar} {field {foo copy} bar}}
+
+test parse-field-8 {quoted field copy} -body {
+	eno parse {foo: bar
+	`foo copy` < foo}
+} -result {{field foo bar} {field {foo copy} bar}}
+
+
+## block
+
+test parse-block-1 {simple block} -body {
+	eno parse {-- foo
+ test 1 2 3 
+	-- foo}
+} -result {{field foo { test 1 2 3 }}}
+
+test parse-block-1 {simple block} -body {
+	try {
+		eno parse {-- foo
+		test 1 2 3 
+		--- foo}
+	} trap {ENO} {err} { return $err }
+} -result {no matching end for block '-- foo'}
+
+## fieldset
+
+test parse-fieldset-1 {simple fieldset} -body {
+	eno parse {foo:
+	a = 1
+	b = 2}
+} -result {{fieldset foo {a 1 b 2}}}
+
+test parse-fieldset-2 {multiple fieldsets} -body {
+	eno parse {foo:
+	a = 1
+	b = 2
+	bar:
+	c=3
+	e=4}
+} -result {{fieldset foo {a 1 b 2}} {fieldset bar {c 3 e 4}}}
+
+## list
+
+test parse-list-1 {simple list} -body {
+	eno parse {foo:
+	- a
+	- b}
+} -result {{list foo {a b}}}
+
+
+
+## section
+
+test parse-section-1 {simple section} -body {
+	eno parse {# section 1}
+} -result {{section {section 1} {}}}
+
+test parse-section-2 {section line continuation} -body {
+	eno parse {# section
+	\ 1}
+} -result {{section {section 1} {}}}
+
+test parse-section-3 {section newline continuation} -body {
+	eno parse {# section
+	| 1}
+} -result {{section {section
+1} {}}}
+
+test parse-subsection-1 {subsection postprocessing} -body {
+	eno parse {# foo
+	## bar
+	}
+} -result {{section foo {{section bar {}}}}}
+
+test parse-subsection-2 {invalid subsection} -body {
+	try {
+		eno parse {# foo
+		### bar
+		}
+	} trap {ENO} {err} { return $err }
+
+} -result {invalid section depth (3): bar}
+
+test parse-section-4 {section copy} -body {
+	eno parse {# default
+	id:
+	foo: bar
+	## settings
+	hyperservice: disabled
+
+	# production < default
+	id: prod
+	## settings
+	ultraservice: enabled
+	}
+} -result {{section default {{field id {}} {field foo bar} {section settings {{field hyperservice disabled}}}}} {section production {{field id prod} {field foo bar} {section settings {{field ultraservice enabled}}}}}}
+
+test parse-section-5 {section deep copy} -body {
+	eno parse {# default
+	id:
+	foo: bar
+	## settings
+	hyperservice: disabled
+
+	# production << default
+	id: prod
+	## settings
+	ultraservice: enabled
+	## xx
+	}
+} -result {{section default {{field id {}} {field foo bar} {section settings {{field hyperservice disabled}}}}} {section production {{field id prod} {field foo bar} {section settings {{field ultraservice enabled} {field hyperservice disabled}}} {section xx {}}}}}
+
+
+## invalid input
+
+test parse-invalid-1 {unknown type} -body {
+	try {
+		eno parse {xxx}
+	} trap {ENO} {err} { return $err }
+} -result {unexpected line 1: xxx}
+
+
+## API
+
+test api-elements-1 {elements by name} -body {
+	set doc [eno parse {a: b
+	a: c
+	b: d}]
+	eno elements $doc "a"
+} -result {{field a b} {field a c}}
+
+test api-element-1 {elements by name} -body {
+	set doc [eno parse {a: b
+	a: c
+	b: d}]
+	eno element $doc "a"
+} -result {field a b}
+
+## internal helper funcitons
+
+test int-split_section-1 {split section} -body {
+	eno::split_section {{foo} {bar} {section a} {section b}}
+} -result {{foo bar} {{section a} {section b}}}
+
+test int-split_section-2 {split section w/o fields} -body {
+	eno::split_section {{section a} {section b}}
+} -result {{} {{section a} {section b}}}
+
+test int-split_section-3 {split section w/o sections} -body {
+	eno::split_section {{foo} {bar}}
+} -result {{foo bar} {}}
+
+## eno writer
+
+test writer-fields {write sections} -body {
+	set data [eno parse {a: b
+	c: d}]
+	eno write $data
+} -result {a: b
+c: d
+}
+
+test writer-fieldsets {write sections} -body {
+	set data [eno parse {fs:
+	a = 1
+	b = 2
+	fs2:
+	x = y}]
+	eno write $data
+} -result {fs:
+a = 1
+b = 2
+fs2:
+x = y
+}
+
+test writer-newline {write newline} -body {
+	set data [eno parse {fs: foo
+	| bar}]
+	eno write $data
+} -result {fs: foo
+| bar
+}
+
+test writer-sections {write sections} -body {
+	set data [eno parse {# sec1
+	## sec2
+	# sec3}]
+	eno write $data
+} -result {# sec1
+## sec2
+# sec3
+}
+
+test writer-lists {write sections} -body {
+	set data [eno parse {a:
+	- item1
+	- item2
+	b:
+	- item3}]
+	eno write $data
+} -result {a:
+- item1
+- item2
+b:
+- item3
+}
+
+test writer-block {write sections} -body {
+	set data [eno parse {-- foo
+ test 1 2 3
+	-- foo
+	-- bar
+ test 4 5 6
+	-- bar}]
+	eno write $data
+} -result {-- foo
+ test 1 2 3
+-- foo
+-- bar
+ test 4 5 6
+-- bar
+}
+
+
+cleanupTests
